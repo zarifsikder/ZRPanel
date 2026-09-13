@@ -250,6 +250,10 @@ else
     spin_run "Cloning repository…" git clone --depth 1 "$GIT_URL" "$PANEL_DIR" \
         || die "git clone failed ($GIT_URL)."
 fi
+
+ok "Removing installer files from the device…"
+rm -f "$PANEL_DIR/install.sh" "$PANEL_DIR/README.md" 2>/dev/null
+
 [ -f "$PANEL_DIR/config.php" ] || die "Clone/update finished but config.php is missing."
 
 section 3 "MariaDB + panel database"
