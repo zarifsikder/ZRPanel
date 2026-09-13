@@ -13,9 +13,21 @@
 
 set -u
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$SCRIPT_DIR" && pwd)"
 PREFIX=/data/data/com.termux/files/usr
+DEFAULT_PANEL_DIR="$HOME/storage/downloads/hosting"
+
+# Locate the panel directory. When run from a downloaded copy, resolve it from
+# the script's own path; when streamed via `curl ... | bash` (BASH_SOURCE is
+# empty), fall back to the current directory, then to the standard install
+# location.
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+    ROOT="$PWD"
+fi
+if [ ! -d "$ROOT/.git" ] && [ -d "$DEFAULT_PANEL_DIR/.git" ]; then
+    ROOT="$DEFAULT_PANEL_DIR"
+fi
 
 GIT_URL="$(git -C "$ROOT" remote get-url origin 2>/dev/null || echo "unknown")"
 

@@ -51,6 +51,34 @@ curl -fsSL https://raw.githubusercontent.com/zarifsikder/zenpanel/main/install.s
 
 <div align="center">
 
+## 🔄 Update
+
+</div>
+
+Keep the panel on the latest version from anywhere:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zarifsikder/zenpanel/main/update.sh | bash
+```
+
+<details>
+<summary>Already installed? Just run the updater on-device instead.</summary>
+
+```bash
+~/storage/downloads/hosting/update.sh
+```
+
+</details>
+
+> The updater pulls the latest code, syncs the database schema, re-removes the
+> installer-only files (`install.sh`, `README.md`) and restarts things if they
+> were stopped. Your `config.local.php`, `tunnel_data/` and `user_data/` are
+> never touched.
+
+---
+
+<div align="center">
+
 ## 🏗️ Architecture
 
 ```mermaid
@@ -326,6 +354,7 @@ curl -fsSL https://raw.githubusercontent.com/zarifsikder/zenpanel/main/install.s
 ├── 🔀 router.php            front controller (routing, compression, minification)
 ├── ⚙️ config.php            PDO, feature flags, per-install secrets loader
 ├── 📥 install.sh            the installer (target of the curl one-liner)
+├── 🔄 update.sh             the updater (target of the curl update one-liner)
 ├── 🚀 scripts/start         canonical launcher (wired to ~/start by the installer)
 ├── 👤 cpanel/               customer control panel
 ├── 🛠️ whm/                  admin panel
