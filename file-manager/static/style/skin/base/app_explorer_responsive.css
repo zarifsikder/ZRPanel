@@ -1,0 +1,92 @@
+/* ============================================================
+   ZRPanel - Responsive file explorer
+   Makes the desktop explorer usable on phones, tablets, and
+   small laptop screens. Loaded after the active theme.
+   ============================================================ */
+
+/* ---------- Small laptops / tablets (portrait) ---------- */
+@media (max-width: 1100px) {
+	body .frame-main .frame-left{width:170px;}
+	body .frame-main .frame-right{left:171px;}
+	body .frame-header .header-content .header-right{right:10px;}
+	body .frame-header .header-content .header-right input{width:70px;}
+	body .frame-main .frame-right .frame-right-main .tools .tools-right{width:200px;}
+}
+
+/* ---------- Phones & portrait tablets ---------- */
+@media (max-width: 820px) {
+	/* dump the fixed desktop min-widths that force horizontal overflow */
+	body .frame-header{min-width:0;}
+	body .frame-main .frame-right{min-width:0;}
+	body .frame-main .frame-right .frame-right-main .tools{min-width:0;}
+
+	/* full-bleed file area: hide left sidebar + drag divider */
+	body .frame-main .frame-left,
+	body .frame-main .frame-resize{display:none!important;}
+	body .frame-main .frame-right{left:0!important;}
+
+	/* compact header: drop back/next buttons */
+	body .frame-header .header-content .header-left{display:none;}
+
+	/* breadcrumb + search share the row */
+	body .frame-header .header-content .header-middle{
+		display:flex;
+		align-items:center;
+		left:6px!important;
+		padding:0 4px;
+	}
+	body .frame-header .header-content .header-middle #fav,
+	body .frame-header .header-content .header-middle #goto-father,
+	body .frame-header .header-content .header-middle #home,
+	body .frame-header .header-content .header-middle .path-tips{display:none!important;}
+	body .header-middle #yarnball{
+		flex:1;
+		width:auto!important;
+		min-width:0;
+		margin:0 4px;
+	}
+
+	/* search box stays small but reachable */
+	body .frame-header .header-content .header-right{top:10px;right:8px;}
+	body .frame-header .header-content .header-right input{width:60px;}
+
+	/* toolbar: hide view-mode & size controls to give actions room */
+	body .frame-right-main .tools .tools-right{display:none;}
+	body .frame-right-main .tools .tools-left{margin-left:6px;}
+
+	/* slightly tighter file grid padding */
+	body div.file-list-icon{padding:8px 10px 0 8px;}
+	body div.file-list-list,body div.file-list-split{padding-left:6px;}
+
+	/* dialogs never wider than the screen */
+	body .aui-outer{max-width:96vw;}
+	body .aui-content{max-height:80vh;overflow:auto;}
+
+	/* topbar title shouldn't hog the whole row */
+	body .topbar .content .topbar-menu.title{
+		width:auto;
+		padding:0 12px;
+		font-size:15px;
+	}
+}
+
+/* ---------- Small phones ---------- */
+@media (max-width: 480px) {
+	/* clear the row for search on the right */
+	body .frame-header .header-content .header-middle{padding-right:112px;}
+
+	/* keep the primary toolbar actions visible; hide the split caret buttons */
+	body .frame-right-main .tools .tool-path-newfile,
+	body .frame-right-main .tools .tool-path-upload{display:none;}
+
+	body div.file-list-icon .file{margin-right:6px;margin-bottom:8px;}
+	body #main-title .filename{min-width:120px;}
+}
+
+/* ---------- Landscape phones ---------- */
+@media (max-height: 480px) and (orientation: landscape) {
+	body .frame-main{top:38px;bottom:0;}
+	body .topbar{height:38px;}
+	body .topbar .content{height:37px;line-height:38px;}
+	body .frame-header .header-content .header-right{top:8px;}
+}

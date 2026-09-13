@@ -1,0 +1,357 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ============================================================
+#  ZRPanel launcher — invoked by ~/off
+#
+#  Stops every service started by scripts/start: the PHP panel,
+#  File Browser, Cloudflare tunnel and MariaDB. Idempotent and
+#  safe to call repeatedly.
+# ============================================================
+
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(dirname "$SCRIPT_DIR")"
+PREFIX=/data/data/com.termux/files/usr
+SOCK="$PREFIX/var/run/mysqld/mysqld.sock"
+LOG="$PREFIX/var/panel"
+
+# ────────────────────────────────────────────────────────────
+#  COLOR PALETTE (matches start script)
+# ────────────────────────────────────────────────────────────
+R=$'\033[0m'
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+ITALIC=$'\033[3m'
+UNDER=$'\033[4m'
+
+BLACK=$'\033[30m'
+RED=$'\033[31m'
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+BLUE=$'\033[34m'
+MAGENTA=$'\033[35m'
+CYAN=$'\033[36m'
+WHITE=$'\033[37m'
+
+BRED=$'\033[91m'
+BGREEN=$'\033[92m'
+BYELLOW=$'\033[93m'
+BBLUE=$'\033[94m'
+BMAGENTA=$'\033[95m'
+BCYAN=$'\033[96m'
+BWHITE=$'\033[97m'
+
+BG_BLACK=$'\033[40m'
+BG_RED=$'\033[41m'
+BG_GREEN=$'\033[42m'
+BG_YELLOW=$'\033[43m'
+BG_BLUE=$'\033[44m'
+BG_MAGENTA=$'\033[45m'
+BG_CYAN=$'\033[46m'
+BG_WHITE=$'\033[47m'
+
+TERM_WIDTH=$(tput cols 2>/dev/null || echo 60)
+[ "$TERM_WIDTH" -gt 70 ] && TERM_WIDTH=70
+[ "$TERM_WIDTH" -lt 50 ] && TERM_WIDTH=50
+
+# ────────────────────────────────────────────────────────────
+#  UI HELPERS
+# ────────────────────────────────────────────────────────────
+hr() {
+    local char="${1:-─}"
+    local width="${2:-$TERM_WIDTH}"
+    local line=""
+    for ((i=0; i<width; i++)); do
+        line+="$char"
+    done
+    printf "%s\n" "$line"
+}
+
+center() {
+    local text="$1"
+    local width="${2:-$TERM_WIDTH}"
+    local clean_text
+    clean_text=$(printf "%s" "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    local text_len=${#clean_text}
+    local padding=$(( (width - text_len) / 2 ))
+    [ "$padding" -lt 0 ] && padding=0
+    printf "%*s%s\n" "$padding" "" "$text"
+}
+
+box_top() {
+    local width="${1:-$TERM_WIDTH}"
+    printf "${BCYAN}╔"
+    for ((i=0; i<width-2; i++)); do printf "═"; done
+    printf "╗${R}\n"
+}
+
+box_bottom() {
+    local width="${1:-$TERM_WIDTH}"
+    printf "${BCYAN}╚"
+    for ((i=0; i<width-2; i++)); do printf "═"; done
+    printf "╝${R}\n"
+}
+
+box_line() {
+    local text="$1"
+    local width="${2:-$TERM_WIDTH}"
+    local clean_text
+    clean_text=$(printf "%s" "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    local text_len=${#clean_text}
+    local inner=$((width - 4))
+    local padding=$(( (inner - text_len) / 2 ))
+    [ "$padding" -lt 0 ] && padding=0
+    local right_pad=$((inner - text_len - padding))
+    [ "$right_pad" -lt 0 ] && right_pad=0
+    printf "${BCYAN}║${R} %*s%s%*s ${BCYAN}║${R}\n" "$padding" "" "$text" "$right_pad" ""
+}
+
+section() {
+    local title="$1"
+    local icon="${2:-◆}"
+    echo
+    printf "${BMAGENTA}${BOLD}  ${icon}  ${title}${R}\n"
+    printf "${MAGENTA}  "
+    for ((i=0; i<TERM_WIDTH-4; i++)); do printf "─"; done
+    printf "${R}\n"
+}
+
+status_ok() {
+    local label="$1"
+    local value="${2:-}"
+    printf "  ${BGREEN}${BOLD} ✓ ${R}  ${BOLD}%-28s${R}" "$label"
+    if [ -n "$value" ]; then
+        printf " ${DIM}${BGREEN}%s${R}" "$value"
+    fi
+    echo
+}
+
+status_run() {
+    local label="$1"
+    local value="${2:-}"
+    printf "  ${BCYAN}${BOLD} ● ${R}  ${BOLD}%-28s${R}" "$label"
+    if [ -n "$value" ]; then
+        printf " ${DIM}${BCYAN}%s${R}" "$value"
+    fi
+    echo
+}
+
+status_warn() {
+    local label="$1"
+    local value="${2:-}"
+    printf "  ${BYELLOW}${BOLD} ⚠ ${R}  ${BOLD}%-28s${R}" "$label"
+    if [ -n "$value" ]; then
+        printf " ${DIM}${BYELLOW}%s${R}" "$value"
+    fi
+    echo
+}
+
+status_err() {
+    local label="$1"
+    local value="${2:-}"
+    printf "  ${BRED}${BOLD} ✗ ${R}  ${BOLD}%-28s${R}" "$label"
+    if [ -n "$value" ]; then
+        printf " ${DIM}${BRED}%s${R}" "$value"
+    fi
+    echo
+}
+
+status_info() {
+    local label="$1"
+    printf "  ${BBLUE}${BOLD} ℹ ${R}  ${DIM}%s${R}\n" "$label"
+}
+
+status_stop() {
+    local label="$1"
+    local value="${2:-}"
+    printf "  ${BMAGENTA}${BOLD} ○ ${R}  ${BOLD}%-28s${R}" "$label"
+    if [ -n "$value" ]; then
+        printf " ${DIM}${BMAGENTA}%s${R}" "$value"
+    fi
+    echo
+}
+
+progress_bar() {
+    local current="$1"
+    local total="$2"
+    local label="${3:-Progress}"
+    local width=30
+    local filled=$((current * width / total))
+    local empty=$((width - filled))
+
+    printf "\r  ${BOLD}%s${R} ${BMAGENTA}[" "$label"
+    for ((i=0; i<filled; i++)); do printf "${BRED}█${R}"; done
+    for ((i=0; i<empty; i++)); do printf "${DIM}░${R}"; done
+    printf "${BMAGENTA}]${R} ${BOLD}%3d%%${R}" "$((current * 100 / total))"
+}
+
+run_progress() {
+    local label="$1"
+    local seconds="${2:-1}"
+    local steps=20
+    local delay
+    delay=$(awk "BEGIN {print $seconds/$steps}")
+
+    for i in $(seq 1 "$steps"); do
+        progress_bar "$i" "$steps" "$label"
+        sleep "$delay"
+    done
+    progress_bar "$steps" "$steps" "$label"
+    echo
+}
+
+print_ok()      { status_ok "$1" "$2"; }
+print_running() { status_run "$1" "$2"; }
+print_warn()    { status_warn "$1" "$2"; }
+print_error()   { status_err "$1" "$2"; }
+print_info()    { status_info "$1"; }
+print_stop()    { status_stop "$1" "$2"; }
+
+# ────────────────────────────────────────────────────────────
+#  SPLASH BANNER
+# ────────────────────────────────────────────────────────────
+show_splash() {
+    clear 2>/dev/null || true
+    echo
+
+    printf "${BRED}${BOLD}"
+    cat <<'BANNER'
+    ███████╗███████╗███╗   ██╗
+    ╚══███╔╝██╔════╝████╗  ██║
+      ███╔╝ █████╗  ██╔██╗ ██║
+     ███╔╝  ██╔══╝  ██║╚██╗██║
+    ███████╗███████╗██║ ╚████║
+    ╚══════╝╚══════╝╚═╝  ╚═══╝
+BANNER
+    printf "${R}"
+
+    printf "${BMAGENTA}${BOLD}"
+    cat <<'BANNER2'
+    ██████╗  █████╗ ███╗   ██╗███████╗██╗
+    ██╔══██╗██╔══██╗████╗  ██║██╔════╝██║
+    ██████╔╝███████║██╔██╗ ██║█████╗  ██║
+    ██╔═══╝ ██╔══██║██║╚██╗██║██╔══╝  ██║
+    ██║     ██║  ██║██║ ╚████║███████╗███████╗
+    ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝
+BANNER2
+    printf "${R}"
+
+    echo
+    center "${DIM}${ITALIC}Termux Service Stopper${R}"
+    center "${DIM}v1.0 • Beautiful UI Edition${R}"
+    echo
+
+    box_top
+    box_line "${BRED}${BOLD}Stopping Services...${R}"
+    box_bottom
+    echo
+}
+
+# ────────────────────────────────────────────────────────────
+#  SERVICE STOP FUNCTIONS
+# ────────────────────────────────────────────────────────────
+_stop_panel() {
+    if pgrep -f -- '-S 0.0.0.0:8080' >/dev/null 2>&1; then
+        pkill -f -- '-S 0.0.0.0:8080' >/dev/null 2>&1
+        sleep 2
+        if pgrep -f -- '-S 0.0.0.0:8080' >/dev/null 2>&1; then
+            return 1
+        fi
+        status_ok "PHP Panel" "stopped"
+        return 0
+    fi
+    status_stop "PHP Panel" "not running"
+    return 0
+}
+
+_stop_tunnel() {
+    if pgrep -f 'cloudflared.*--token' >/dev/null 2>&1; then
+        pkill -f 'cloudflared.*--token' >/dev/null 2>&1
+        sleep 2
+        if pgrep -f 'cloudflared.*--token' >/dev/null 2>&1; then
+            return 1
+        fi
+        status_ok "Cloudflare Tunnel" "stopped"
+        return 0
+    fi
+    status_stop "Cloudflare Tunnel" "not running"
+    return 0
+}
+
+_stop_mariadb() {
+    # Detect the MariaDB client + admin command (mysql/mysqladmin deprecated since 10.11)
+    if command -v mariadb-admin >/dev/null 2>&1; then
+        MYSQL_CMD="mariadb"; MYSQL_ADMIN="mariadb-admin"
+    elif command -v mariadb >/dev/null 2>&1; then
+        MYSQL_CMD="mariadb"; MYSQL_ADMIN="mysqladmin"
+    else
+        MYSQL_CMD="mysql"; MYSQL_ADMIN="mysqladmin"
+    fi
+
+    if "$MYSQL_CMD" --socket="$SOCK" -u root -e "SELECT 1" >/dev/null 2>&1 \
+       || pgrep -f mariadbd >/dev/null 2>&1; then
+        "$MYSQL_ADMIN" --socket="$SOCK" -u root shutdown >/dev/null 2>&1 \
+            || pkill -f mariadbd >/dev/null 2>&1
+        for _ in $(seq 1 15); do
+            ! "$MYSQL_CMD" --socket="$SOCK" -u root -e "SELECT 1" >/dev/null 2>&1 \
+                && ! pgrep -f mariadbd >/dev/null 2>&1 && break
+            sleep 1
+        done
+        if "$MYSQL_CMD" --socket="$SOCK" -u root -e "SELECT 1" >/dev/null 2>&1 \
+           || pgrep -f mariadbd >/dev/null 2>&1; then
+            return 1
+        fi
+        status_ok "MariaDB Server" "stopped"
+        return 0
+    fi
+    status_stop "MariaDB Server" "not running"
+    return 0
+}
+
+# ────────────────────────────────────────────────────────────
+#  MAIN
+# ────────────────────────────────────────────────────────────
+show_splash
+
+section "PHP APPLICATION" "🚀"
+if ! _stop_panel; then
+    status_err "PHP Panel" "still running"
+fi
+
+section "CLOUDFLARE TUNNEL" "🌐"
+if ! _stop_tunnel; then
+    status_err "Cloudflare Tunnel" "still running"
+fi
+
+section "DATABASE" "🗄"
+if ! _stop_mariadb; then
+    status_err "MariaDB Server" "still running"
+fi
+
+echo
+echo
+
+printf "${BG_RED}${BWHITE}${BOLD}"
+hr " " "$TERM_WIDTH"
+center "🛑  ZENPANEL IS DOWN  🛑"
+hr " " "$TERM_WIDTH"
+printf "${R}"
+echo
+
+box_top
+printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BRED}%s${R}\n" "🌐  Panel" "stopped"
+printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BRED}%s${R}\n" "📡  File Browser" "stopped"
+printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BRED}%s${R}\n" "🗄  MariaDB" "shutdown"
+printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BRED}%s${R}\n" "☁  Cloudflare" "disconnected"
+box_bottom
+
+echo
+
+printf "${BCYAN}"
+hr "─" "$TERM_WIDTH"
+printf "${R}"
+center "${DIM}${ITALIC}ZRPanel • Termux Service Stopper • $(date '+%Y-%m-%d %H:%M:%S')${R}"
+printf "${BCYAN}"
+hr "─" "$TERM_WIDTH"
+printf "${R}"
+echo

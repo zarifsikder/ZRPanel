@@ -1,0 +1,42 @@
+services:
+  db:
+    image: mariadb:10.11
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASS:-rootpass2026}
+      MYSQL_DATABASE: ${MYSQL_DB:-panel}
+      MYSQL_USER: ${MYSQL_USER:-paneluser}
+      MYSQL_PASSWORD: ${MYSQL_PASS:-panel2026pass}
+    volumes:
+      - db_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+      - "53:53/udp"
+      - "53:53/tcp"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      MYSQL_HOST: db
+      MYSQL_PORT: "3306"
+      MYSQL_DB: ${MYSQL_DB:-panel}
+      MYSQL_USER: ${MYSQL_USER:-paneluser}
+      MYSQL_PASS: ${MYSQL_PASS:-panel2026pass}
+    volumes:
+      - app_data:/var/www/html/user_data
+      - ./:/var/www/html:ro
+
+volumes:
+  db_data:
+  app_data:

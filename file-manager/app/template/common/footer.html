@@ -1,0 +1,13 @@
+<div class="common-footer aero">
+	<?php 
+		if(is_wap()){
+			echo '<span class="pr-10"><a href="javascript:void(0);" forceWap="1">'.LNG('wap_page_phone').'</a> | '.
+				 '<a href="javascript:void(0);" forceWap="0">'.LNG('wap_page_pc').'</a></span> ';
+		}else{
+			echo '<span class="copyright-content">';
+			echo '</span>';
+		}
+	?>
+</div>
+<!-- https://getfirebug.com/firebuglite -->
+<?php include(TEMPLATE.'common/footerCommon.html');?>

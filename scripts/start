@@ -1,0 +1,564 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+PREFIX="/data/data/com.termux/files/usr"
+
+PORT="8080"
+DBNAME="panel"
+
+DEFAULT_SOCKET="$PREFIX/var/run/mysqld.sock"
+ALT_SOCKET_1="$PREFIX/var/run/mysqld/mysqld.sock"
+ALT_SOCKET_2="$PREFIX/var/run/mysqld.sock"
+
+MYSQL_DATA="$PREFIX/var/lib/mysql"
+
+LOG_DIR="$PREFIX/var/panel"
+PANEL_LOG="$LOG_DIR/panel.log"
+MYSQL_LOG="$LOG_DIR/mariadb.log"
+
+TUNNEL_TOKEN_FILE="$ROOT/tunnel_data/panel/connector.token"
+
+mkdir -p "$PREFIX/var/run"
+mkdir -p "$LOG_DIR"
+
+R=$'\033[0m'
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+ITALIC=$'\033[3m'
+UNDER=$'\033[4m'
+
+BLACK=$'\033[30m'
+RED=$'\033[31m'
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+BLUE=$'\033[34m'
+MAGENTA=$'\033[35m'
+CYAN=$'\033[36m'
+WHITE=$'\033[37m'
+
+BRED=$'\033[91m'
+BGREEN=$'\033[92m'
+BYELLOW=$'\033[93m'
+BBLUE=$'\033[94m'
+BMAGENTA=$'\033[95m'
+BCYAN=$'\033[96m'
+BWHITE=$'\033[97m'
+
+BG_BLACK=$'\033[40m'
+BG_RED=$'\033[41m'
+BG_GREEN=$'\033[42m'
+BG_YELLOW=$'\033[43m'
+BG_BLUE=$'\033[44m'
+BG_MAGENTA=$'\033[45m'
+BG_CYAN=$'\033[46m'
+BG_WHITE=$'\033[47m'
+
+TERM_WIDTH=$(tput cols 2>/dev/null || echo 60)
+[ "$TERM_WIDTH" -gt 70 ] && TERM_WIDTH=70
+[ "$TERM_WIDTH" -lt 50 ] && TERM_WIDTH=50
+
+hr() {
+    local char="${1:-─}"
+    local width="${2:-$TERM_WIDTH}"
+    local line=""
+    for ((i=0; i<width; i++)); do
+        line+="$char"
+    done
+    printf "%s\n" "$line"
+}
+
+center() {
+    local text="$1"
+    local width="${2:-$TERM_WIDTH}"
+    local clean_text
+    clean_text=$(printf "%s" "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    local text_len=${#clean_text}
+    local padding=$(( (width - text_len) / 2 ))
+    [ "$padding" -lt 0 ] && padding=0
+    printf "%*s%s\n" "$padding" "" "$text"
+}
+
+box_top() {
+    local width="${1:-$TERM_WIDTH}"
+    printf "${BCYAN}╔"
+    for ((i=0; i<width-2; i++)); do printf "═"; done
+    printf "╗${R}\n"
+}
+
+box_bottom() {
+    local width="${1:-$TERM_WIDTH}"
+    printf "${BCYAN}╚"
+    for ((i=0; i<width-2; i++)); do printf "═"; done
+    printf "╝${R}\n"
+}
+
+box_line() {
+    local text="$1"
+    local width="${2:-$TERM_WIDTH}"
+    local clean_text
+    clean_text=$(printf "%s" "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    local text_len=${#clean_text}
+    local inner=$((width - 4))
+    local padding=$(( (inner - text_len) / 2 ))
+    [ "$padding" -lt 0 ] && padding=0
+    local right_pad=$((inner - text_len - padding))
+    [ "$right_pad" -lt 0 ] && right_pad=0
+    printf "${BCYAN}║${R} %*s%s%*s ${BCYAN}║${R}\n" "$padding" "" "$text" "$right_pad" ""
+}
+
+section() {
+    local title="$1"
+    local icon="${2:-◆}"
+    echo
+    printf "${BMAGENTA}${BOLD}  ${icon}  ${title}${R}\n"
+    printf "${MAGENTA}  "
+    for ((i=0; i<TERM_WIDTH-4; i++)); do printf "─"; done
+    printf "${R}\n"
+}
+
+status_ok() {
+    local label="$1"
+    local value="${2:-}"
+    printf "  ${BGREEN}${BOLD} ✓ ${R}  ${BOLD}%-28s${R}" "$label"
+    if [ -n "$value" ]; then
+        printf " ${DIM}${BGREEN}%s${R}" "$value"
+    fi
+    echo
+}
+
+status_run() {
+    local label="$1"
+    local value="${2:-}"
+    printf "  ${BCYAN}${BOLD} ● ${R}  ${BOLD}%-28s${R}" "$label"
+    if [ -n "$value" ]; then
+        printf " ${DIM}${BCYAN}%s${R}" "$value"
+    fi
+    echo
+}
+
+status_warn() {
+    local label="$1"
+    local value="${2:-}"
+    printf "  ${BYELLOW}${BOLD} ⚠ ${R}  ${BOLD}%-28s${R}" "$label"
+    if [ -n "$value" ]; then
+        printf " ${DIM}${BYELLOW}%s${R}" "$value"
+    fi
+    echo
+}
+
+status_err() {
+    local label="$1"
+    local value="${2:-}"
+    printf "  ${BRED}${BOLD} ✗ ${R}  ${BOLD}%-28s${R}" "$label"
+    if [ -n "$value" ]; then
+        printf " ${DIM}${BRED}%s${R}" "$value"
+    fi
+    echo
+}
+
+status_info() {
+    local label="$1"
+    printf "  ${BBLUE}${BOLD} ℹ ${R}  ${DIM}%s${R}\n" "$label"
+}
+
+progress_bar() {
+    local current="$1"
+    local total="$2"
+    local label="${3:-Progress}"
+    local width=30
+    local filled=$((current * width / total))
+    local empty=$((width - filled))
+
+    printf "\r  ${BOLD}%s${R} ${BCYAN}[" "$label"
+    for ((i=0; i<filled; i++)); do printf "${BGREEN}█${R}"; done
+    for ((i=0; i<empty; i++)); do printf "${DIM}░${R}"; done
+    printf "${BCYAN}]${R} ${BOLD}%3d%%${R}" "$((current * 100 / total))"
+}
+
+run_progress() {
+    local label="$1"
+    local seconds="${2:-1}"
+    local steps=20
+    local delay
+    delay=$(awk "BEGIN {print $seconds/$steps}")
+
+    for i in $(seq 1 "$steps"); do
+        progress_bar "$i" "$steps" "$label"
+        sleep "$delay"
+    done
+    progress_bar "$steps" "$steps" "$label"
+    echo
+}
+
+print_ok()      { status_ok "$1" "$2"; }
+print_running() { status_run "$1" "$2"; }
+print_warn()    { status_warn "$1" "$2"; }
+print_error()   { status_err "$1" "$2"; }
+print_info()    { status_info "$1"; }
+
+show_splash() {
+    clear 2>/dev/null || true
+    echo
+
+    printf "${BCYAN}${BOLD}"
+    cat <<'BANNER'
+    ███████╗███████╗███╗   ██╗
+    ╚══███╔╝██╔════╝████╗  ██║
+      ███╔╝ █████╗  ██╔██╗ ██║
+     ███╔╝  ██╔══╝  ██║╚██╗██║
+    ███████╗███████╗██║ ╚████║
+    ╚══════╝╚══════╝╚═╝  ╚═══╝
+BANNER
+    printf "${R}"
+
+    printf "${BMAGENTA}${BOLD}"
+    cat <<'BANNER2'
+    ██████╗  █████╗ ███╗   ██╗███████╗██╗
+    ██╔══██╗██╔══██╗████╗  ██║██╔════╝██║
+    ██████╔╝███████║██╔██╗ ██║█████╗  ██║
+    ██╔═══╝ ██╔══██║██║╚██╗██║██╔══╝  ██║
+    ██║     ██║  ██║██║ ╚████║███████╗███████╗
+    ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝
+BANNER2
+    printf "${R}"
+
+    echo
+    center "${DIM}${ITALIC}Termux Service Launcher${R}"
+    center "${DIM}v1.0 • Beautiful UI Edition${R}"
+    echo
+
+    box_top
+    box_line "${BCYAN}${BOLD}Starting Services...${R}"
+    box_bottom
+    echo
+}
+
+show_splash
+
+section "PROJECT" "📁"
+
+if [ ! -d "$ROOT" ]; then
+    status_err "Project directory not found"
+    echo
+    printf "  ${DIM}Expected:${R}\n"
+    printf "  ${BRED}%s${R}\n" "$ROOT"
+    echo
+    exit 1
+fi
+
+status_ok "Project directory" "found"
+
+if ! command -v php >/dev/null 2>&1; then
+    status_err "PHP is not installed"
+    echo
+    printf "  ${DIM}Install PHP with:${R}\n"
+    printf "  ${BCYAN}  pkg install php${R}\n"
+    echo
+    exit 1
+fi
+
+PHP_VERSION="$(php -r 'echo PHP_VERSION;' 2>/dev/null || echo unknown)"
+status_ok "PHP Runtime" "v$PHP_VERSION"
+
+if command -v mariadb >/dev/null 2>&1; then
+    MYSQL_CMD="mariadb"
+elif command -v mysql >/dev/null 2>&1; then
+    MYSQL_CMD="mysql"
+else
+    status_err "MariaDB client not found"
+    echo
+    printf "  ${DIM}Install MariaDB with:${R}\n"
+    printf "  ${BCYAN}  pkg install mariadb${R}\n"
+    echo
+    exit 1
+fi
+
+SOCK=""
+
+check_mysql_socket() {
+    TEST_SOCKET="$1"
+    if [ -S "$TEST_SOCKET" ]; then
+        if "$MYSQL_CMD" \
+            --protocol=SOCKET \
+            --socket="$TEST_SOCKET" \
+            -u root \
+            -e "SELECT 1;" \
+            >/dev/null 2>&1; then
+            SOCK="$TEST_SOCKET"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+check_mysql_socket "$DEFAULT_SOCKET" || \
+check_mysql_socket "$ALT_SOCKET_1" || \
+check_mysql_socket "$ALT_SOCKET_2" || true
+
+if [ -z "$SOCK" ]; then
+    if pgrep -x mariadbd >/dev/null 2>&1 || \
+       pgrep -x mysqld >/dev/null 2>&1; then
+        status_info "MariaDB process detected, waiting for socket..."
+
+        for i in $(seq 1 10); do
+            sleep 0.5
+            check_mysql_socket "$DEFAULT_SOCKET" && break
+            check_mysql_socket "$ALT_SOCKET_1" && break
+            check_mysql_socket "$ALT_SOCKET_2" && break
+        done
+    fi
+fi
+
+section "DATABASE" "🗄"
+
+if [ -n "$SOCK" ]; then
+    status_run "MariaDB Server" "already running"
+else
+    status_info "Starting MariaDB server..."
+
+    if [ ! -d "$MYSQL_DATA/mysql" ]; then
+        run_progress "Init data" 1
+
+        if command -v mariadb-install-db >/dev/null 2>&1; then
+            mariadb-install-db \
+                --datadir="$MYSQL_DATA" \
+                --auth-root-authentication-method=normal \
+                >/dev/null 2>&1 || \
+            mariadb-install-db \
+                --datadir="$MYSQL_DATA" \
+                >/dev/null 2>&1
+        elif command -v mysql_install_db >/dev/null 2>&1; then
+            mysql_install_db \
+                --datadir="$MYSQL_DATA" \
+                >/dev/null 2>&1
+        fi
+    fi
+
+    [ -S "$DEFAULT_SOCKET" ] && rm -f "$DEFAULT_SOCKET"
+    [ -S "$ALT_SOCKET_1" ]   && rm -f "$ALT_SOCKET_1"
+
+    if command -v mariadbd-safe >/dev/null 2>&1; then
+        nohup mariadbd-safe \
+            --datadir="$MYSQL_DATA" \
+            --socket="$DEFAULT_SOCKET" \
+            --pid-file="$LOG_DIR/mariadb.pid" \
+            --log-error="$MYSQL_LOG" \
+            >/dev/null 2>&1 </dev/null &
+    elif command -v mysqld_safe >/dev/null 2>&1; then
+        nohup mysqld_safe \
+            --datadir="$MYSQL_DATA" \
+            --socket="$DEFAULT_SOCKET" \
+            --pid-file="$LOG_DIR/mariadb.pid" \
+            --log-error="$MYSQL_LOG" \
+            >/dev/null 2>&1 </dev/null &
+    else
+        nohup mariadbd \
+            --datadir="$MYSQL_DATA" \
+            --socket="$DEFAULT_SOCKET" \
+            --pid-file="$LOG_DIR/mariadb.pid" \
+            --log-error="$MYSQL_LOG" \
+            >/dev/null 2>&1 </dev/null &
+    fi
+
+    run_progress "Booting" 2
+
+    if [ -z "$SOCK" ]; then
+        for i in $(seq 1 10); do
+            sleep 0.5
+            check_mysql_socket "$DEFAULT_SOCKET" && break
+            check_mysql_socket "$ALT_SOCKET_1" && break
+            check_mysql_socket "$ALT_SOCKET_2" && break
+        done
+    fi
+
+    if [ -n "$SOCK" ]; then
+        status_ok "MariaDB Server" "started"
+    else
+        status_err "MariaDB failed to start"
+        echo
+        exit 1
+    fi
+fi
+
+if "$MYSQL_CMD" \
+    --protocol=SOCKET \
+    --socket="$SOCK" \
+    -u root \
+    -e "CREATE DATABASE IF NOT EXISTS \`$DBNAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;" \
+    >/dev/null 2>&1; then
+    status_ok "Database" "$DBNAME"
+else
+    status_warn "Database creation failed"
+fi
+
+section "PHP APPLICATION" "🚀"
+
+PHP_MODE=""
+
+if [ -f "$ROOT/router.php" ]; then
+    PHP_MODE="router"
+elif [ -f "$ROOT/public/index.php" ]; then
+    PHP_MODE="public"
+elif [ -f "$ROOT/index.php" ]; then
+    PHP_MODE="root"
+elif [ -f "$ROOT/index.html" ]; then
+    PHP_MODE="root"
+else
+    status_err "No index.php/index.html/router.php found"
+    echo
+    printf "  ${DIM}Files found in project root:${R}\n"
+    ls -la "$ROOT" | head -n 30 | sed 's/^/  /'
+    echo
+    exit 1
+fi
+
+status_info "Detected mode: ${BOLD}${PHP_MODE}${R}"
+
+if curl -fsS \
+    --max-time 3 \
+    "http://127.0.0.1:$PORT/" \
+    >/dev/null 2>&1; then
+
+    status_run "PHP Panel" "port $PORT"
+
+else
+    OLD_PHP_PIDS=""
+    if command -v pgrep >/dev/null 2>&1; then
+        OLD_PHP_PIDS="$(pgrep -f "php.*-S.*0.0.0.0:$PORT" 2>/dev/null || true)"
+    fi
+    if [ -n "$OLD_PHP_PIDS" ]; then
+        for PID in $OLD_PHP_PIDS; do
+            kill "$PID" >/dev/null 2>&1 || true
+        done
+        sleep 0.5
+    fi
+
+    cd "$ROOT" || exit 1
+
+    if [ "$PHP_MODE" = "router" ]; then
+        nohup env PHP_CLI_SERVER_WORKERS=8 \
+            php \
+            -d opcache.enable=1 \
+            -d opcache.validate_timestamps=1 \
+            -d opcache.revalidate_freq=0 \
+            -d upload_max_filesize=128M \
+            -d post_max_size=160M \
+            -d memory_limit=512M \
+            -S "0.0.0.0:$PORT" \
+            "$ROOT/router.php" \
+            >> "$PANEL_LOG" 2>&1 </dev/null &
+
+    elif [ "$PHP_MODE" = "public" ]; then
+        nohup env PHP_CLI_SERVER_WORKERS=8 \
+            php \
+            -d opcache.enable=1 \
+            -d opcache.validate_timestamps=1 \
+            -d opcache.revalidate_freq=0 \
+            -d upload_max_filesize=128M \
+            -d post_max_size=160M \
+            -d memory_limit=512M \
+            -S "0.0.0.0:$PORT" \
+            -t "$ROOT/public" \
+            >> "$PANEL_LOG" 2>&1 </dev/null &
+
+    else
+        nohup env PHP_CLI_SERVER_WORKERS=8 \
+            php \
+            -d opcache.enable=1 \
+            -d opcache.validate_timestamps=1 \
+            -d opcache.revalidate_freq=0 \
+            -d upload_max_filesize=128M \
+            -d post_max_size=160M \
+            -d memory_limit=512M \
+            -S "0.0.0.0:$PORT" \
+            -t "$ROOT" \
+            >> "$PANEL_LOG" 2>&1 </dev/null &
+    fi
+
+    run_progress "Booting" 1.5
+
+    PHP_OK=0
+    for i in $(seq 1 10); do
+        if curl -fsS \
+            --max-time 3 \
+            "http://127.0.0.1:$PORT/" \
+            >/dev/null 2>&1; then
+            PHP_OK=1
+            break
+        fi
+        sleep 0.5
+    done
+
+    if [ "$PHP_OK" -eq 1 ]; then
+        status_ok "PHP Panel" "port $PORT"
+    else
+        status_err "PHP Panel failed"
+        echo
+        exit 1
+    fi
+fi
+
+section "CLOUDFLARE TUNNEL" "🌐"
+
+if command -v cloudflared >/dev/null 2>&1; then
+    if pgrep -f "cloudflared.*--token" >/dev/null 2>&1; then
+        status_run "Cloudflare Tunnel" "active"
+    elif [ -f "$TUNNEL_TOKEN_FILE" ] && [ -s "$TUNNEL_TOKEN_FILE" ]; then
+        TUNNEL_LOG="$ROOT/tunnel_data/panel/cloudflared.log"
+        mkdir -p "$ROOT/tunnel_data/panel"
+
+        nohup cloudflared tunnel \
+            --no-autoupdate \
+            --loglevel info \
+            --logfile "$TUNNEL_LOG" \
+            run \
+            --token "$(cat "$TUNNEL_TOKEN_FILE")" \
+            >/dev/null 2>&1 </dev/null &
+
+        TUNNEL_PID="$!"
+        echo "$TUNNEL_PID" > "$ROOT/tunnel_data/panel/cloudflared.pid"
+
+        run_progress "Connecting" 2
+
+        if pgrep -f "cloudflared.*--token" >/dev/null 2>&1; then
+            status_ok "Cloudflare Tunnel" "connected"
+        else
+            status_warn "Cloudflare Tunnel failed"
+        fi
+    else
+        status_warn "Cloudflare Tunnel"
+    fi
+else
+    status_warn "cloudflared not installed"
+fi
+
+echo
+echo
+
+printf "${BGREEN}${BLACK}${BOLD}"
+hr " " "$TERM_WIDTH"
+center "🎉  ZENPANEL IS UP  🎉"
+hr " " "$TERM_WIDTH"
+printf "${R}"
+echo
+
+box_top
+printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BGREEN}%s${R}\n" "🌐  Local URL" "http://127.0.0.1:$PORT"
+printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BGREEN}%s${R}\n" "📡  LAN URL" "http://0.0.0.0:$PORT"
+printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BMAGENTA}%s${R}\n" "🗄  Database URL" "mysql://root@localhost:3306/$DBNAME"
+box_bottom
+
+echo
+
+printf "${BCYAN}"
+hr "─" "$TERM_WIDTH"
+printf "${R}"
+center "${DIM}${ITALIC}ZRPanel • Termux Service Launcher • $(date '+%Y-%m-%d %H:%M:%S')${R}"
+printf "${BCYAN}"
+hr "─" "$TERM_WIDTH"
+printf "${R}"
+echo

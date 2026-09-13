@@ -1,0 +1,18 @@
+RewriteEngine On
+
+# Skip localhost and IP addresses (serve directly from doc root)
+RewriteCond %{HTTP_HOST} ^(localhost|127\.0\.0\.1|(\d+\.){3}\d+)$
+RewriteRule ^ - [L]
+
+# Panel's own domain only: serve physical system PHP files directly
+# (login.php, whm/*, cpanel/*, api/*, ...)
+RewriteCond %{HTTP_HOST} ^dzhost\.shop$
+RewriteCond %{REQUEST_FILENAME} -f
+RewriteRule \.php$ - [L]
+
+# Customer domains: never serve panel system files directly. Route every
+# request through index.php, which only ever serves content from the
+# customer's own document root — the panel login/system pages can never be
+# reached from a customer's domain.
+RewriteCond %{HTTP_HOST} !^localhost$
+RewriteRule ^ /index.php [L]

@@ -1,0 +1,50 @@
+# ---- ZRPanel - local/install-secret files (never commit) ----
+config.local.php
+.env
+
+# ---- Runtime data ----
+user_data/
+backups/
+tunnel_data/
+.cache/
+.logs/
+logs/
+mariadb.pid
+mariadb_error.log
+error.log
+debug.log
+feature_flags.json
+
+# ---- KODExplorer runtime data (users, sessions, temp) ----
+file-manager/data/
+
+# ---- Sessions, cookies, databases ----
+*.db
+session-*.md
+cookies.txt
+cj.txt
+hosting.db
+
+# ---- TLS private keys ----
+tls/
+*.pem
+*.key
+
+# ---- Stray/misc ----
+{$home}/
+.DS_Store
+
+# ---- Legacy dev scripts (superseded by scripts/start + scripts/off) ----
+start_all.sh
+start_mysql.sh
+start_panel.sh
+start_tunnel.sh
+run_tunnel.sh
+
+# ---- Local-only dev helpers ----
+test_local.php
+zz_opreset.php
+
+# ---- Node / build artifacts (webapps worker installs these) ----
+node_modules/
+*.log
