@@ -149,6 +149,16 @@ require_once __DIR__ . '/../templates/header.php';
     </div>
 </div>
 
+<?php if (!CF_ENABLED): ?>
+<div class="dns-cf-warn fade-in">
+    <div class="dns-cf-warn-icon"><i data-lucide="alert-triangle" class="lucide"></i></div>
+    <div class="dns-cf-warn-text">
+        <div class="dns-cf-warn-title">Cloudflare sync is disabled</div>
+        <div class="dns-cf-warn-desc">Records are saved locally and served by the built-in authoritative DNS server (<code>scripts/dns_server.php</code>, port <code>5390</code>). To also publish them on Cloudflare, set <code>CF_API_TOKEN</code> and <code>CF_ZONE_ID</code> in <code>config.local.php</code> (or enable Cloudflare in WHM).</div>
+    </div>
+</div>
+<?php endif; ?>
+
 <div class="dns-header fade-in">
     <span class="dns-header-label"><i data-lucide="filter" class="lucide"></i> Filter by zone</span>
     <form method="GET" style="margin-left:auto;width:100%;max-width:240px">
@@ -460,7 +470,28 @@ require_once __DIR__ . '/../templates/header.php';
     padding:12px 18px;background:var(--bg2);border:1px solid var(--border);
     border-radius:var(--radius);margin-bottom:16px;flex-wrap:wrap;
 }
+.dns-cf-warn{
+    display:flex;align-items:flex-start;gap:12px;
+    padding:12px 16px;background:rgba(245,158,11,.07);border:1px solid rgba(245,158,11,.3);
+    border-radius:var(--radius);margin-bottom:16px;
+}
+.dns-cf-warn-icon{
+    width:32px;height:32px;border-radius:8px;flex-shrink:0;
+    display:flex;align-items:center;justify-content:center;
+    background:rgba(245,158,11,.15);color:#f59e0b;
+}
+.dns-cf-warn-icon .lucide{width:16px;height:16px}
+.dns-cf-warn-text{flex:1;min-width:0}
+.dns-cf-warn-title{font-size:13px;font-weight:700;color:#f59e0b}
+.dns-cf-warn-desc{font-size:11.5px;color:var(--text3);margin-top:2px;line-height:1.5}
+.dns-cf-warn-desc code{
+    background:var(--bg4);border:1px solid var(--border);border-radius:4px;
+    padding:1px 5px;font-size:10.5px;font-family:monospace;color:var(--text2);
+}
 .dns-header-label{
+    display:inline-flex;align-items:center;gap:7px;
+    font-size:12px;font-weight:600;color:var(--text3);white-space:nowrap;
+}
     display:inline-flex;align-items:center;gap:7px;
     font-size:12px;font-weight:600;color:var(--text3);white-space:nowrap;
 }

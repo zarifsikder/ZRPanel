@@ -536,6 +536,42 @@ else
     status_warn "cloudflared not installed"
 fi
 
+section "DNS SERVER" "📖"
+
+DNS_LOG="$LOG_DIR/dns.log"
+DNS_PID_FILE="$LOG_DIR/dns_server.pid"
+ZR_DNS_PORT="${ZR_DNS_PORT:-5390}"
+
+if [ -f "$ROOT/dns_sync.php" ]; then
+    if php "$ROOT/dns_sync.php" >> "$DNS_LOG" 2>&1; then
+        status_ok "Zone files exported" "php dns_sync.php"
+    else
+        status_warn "Zone export failed" "see dns.log"
+    fi
+fi
+
+if [ -f "$ROOT/scripts/dns_server.php" ]; then
+    if pgrep -f '[d]ns_server.php' >/dev/null 2>&1; then
+        status_run "Authoritative DNS" "udp/$ZR_DNS_PORT"
+    else
+        nohup php "$ROOT/scripts/dns_server.php" \
+            >> "$DNS_LOG" 2>&1 </dev/null &
+        DNS_PID="$!"
+        echo "$DNS_PID" > "$DNS_PID_FILE"
+
+        run_progress "Booting" 1
+
+        if pgrep -f '[d]ns_server.php' >/dev/null 2>&1; then
+            status_ok "Authoritative DNS" "udp/$ZR_DNS_PORT"
+        else
+            status_warn "Authoritative DNS" "failed (see dns.log)"
+        fi
+    fi
+    status_info "Test: php scripts/dns_probe.php test.localhost A"
+else
+    status_warn "DNS server script" "missing"
+fi
+
 echo
 echo
 
@@ -550,6 +586,7 @@ box_top
 printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BGREEN}%s${R}\n" "🌐  Local URL" "http://127.0.0.1:$PORT"
 printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BGREEN}%s${R}\n" "📡  LAN URL" "http://0.0.0.0:$PORT"
 printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BMAGENTA}%s${R}\n" "🗄  Database URL" "mysql://root@localhost:3306/$DBNAME"
+printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BCYAN}%s${R}\n" "📖  DNS (UDP)" "0.0.0.0:$ZR_DNS_PORT"
 box_bottom
 
 echo

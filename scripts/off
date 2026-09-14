@@ -278,6 +278,21 @@ _stop_tunnel() {
     return 0
 }
 
+_stop_dns() {
+    if pgrep -f '[d]ns_server.php' >/dev/null 2>&1; then
+        pkill -f '[d]ns_server.php' >/dev/null 2>&1
+        sleep 1
+        if pgrep -f '[d]ns_server.php' >/dev/null 2>&1; then
+            return 1
+        fi
+        rm -f "$LOG/dns_server.pid"
+        status_ok "Authoritative DNS" "stopped"
+        return 0
+    fi
+    status_stop "Authoritative DNS" "not running"
+    return 0
+}
+
 _stop_mariadb() {
     # Detect the MariaDB client + admin command (mysql/mysqladmin deprecated since 10.11)
     if command -v mariadb-admin >/dev/null 2>&1; then
@@ -323,6 +338,11 @@ if ! _stop_tunnel; then
     status_err "Cloudflare Tunnel" "still running"
 fi
 
+section "DNS SERVER" "📖"
+if ! _stop_dns; then
+    status_err "Authoritative DNS" "still running"
+fi
+
 section "DATABASE" "🗄"
 if ! _stop_mariadb; then
     status_err "MariaDB Server" "still running"
@@ -343,6 +363,7 @@ printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BRED}%s${R}\n" "🌐  Panel
 printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BRED}%s${R}\n" "📡  File Browser" "stopped"
 printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BRED}%s${R}\n" "🗄  MariaDB" "shutdown"
 printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BRED}%s${R}\n" "☁  Cloudflare" "disconnected"
+printf "${BCYAN}║${R}  ${BOLD}${BCYAN}%-18s${R}  ${BRED}%s${R}\n" "📖  DNS" "stopped"
 box_bottom
 
 echo

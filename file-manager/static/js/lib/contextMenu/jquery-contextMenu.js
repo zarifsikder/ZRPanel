@@ -1629,4 +1629,51 @@ $.contextMenu.menus = menus;
 
 })(jQuery);
 
-$.contextMenu.menuAdd = function(){};
+$.contextMenu.menuAdd = function(option, selector, location, after) {
+	if (option === undefined || selector === undefined || !$.isPlainObject(option)) {
+		return;
+	}
+	if (after === undefined) {
+		after = location;
+	}
+	var o = null;
+	$.each($.contextMenu.menus, function(ns, menu) {
+		if (menu && menu.ns === ns && menu.selector === selector && menu.items) {
+			o = menu;
+			return false;
+		}
+	});
+	if (!o) {
+		return;
+	}
+	var add = {}, result = {}, inserted = false, key, row, item;
+	for (key in option) {
+		if (!Object.prototype.hasOwnProperty.call(option, key)) {
+			continue;
+		}
+		row = option[key];
+		item = row;
+		if (row && typeof row == 'object') {
+			item = $.extend(true, {}, row);
+			if (item.icon && typeof item.icon == 'string') {
+				item.icon = item.icon.replace(/^icon-/, '');
+			}
+		}
+		add[key] = item;
+	}
+	$.each(o.items, function(key, value) {
+		result[key] = value;
+		if (!inserted && after !== undefined && (key === after || '.' + key === after || (value && value.className && '.' + value.className === after))) {
+			$.each(add, function(k, v) {
+				result[k] = v;
+			});
+			inserted = true;
+		}
+	});
+	if (!inserted) {
+		$.each(add, function(k, v) {
+			result[k] = v;
+		});
+	}
+	o.items = result;
+};

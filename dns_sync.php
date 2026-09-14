@@ -1,41 +1,65 @@
 <?php
-define('MYSQL_HOST', getenv('MYSQL_HOST') ?: '127.0.0.1');
-define('MYSQL_PORT', getenv('MYSQL_PORT') ?: '3306');
-define('MYSQL_DB', getenv('MYSQL_DB') ?: 'panel');
-define('MYSQL_USER', getenv('MYSQL_USER') ?: 'paneluser');
-define('MYSQL_PASS', getenv('MYSQL_PASS') ?: 'panel2026pass');
+// ============================================================
+// Local authoritative DNS exporter (NSD).
+//
+// Reads the panel database (same unix-socket / root connection the
+// panel itself uses) and writes RFC-1035 zone files plus an NSD
+// config. On Android/Termux /etc is read-only (/etc -> /system/etc),
+// so everything is exported under a writable base directory, default
+// $HOME/.nsd. Point real NSD (or the bundled PHP DNS server at
+// scripts/dns_server.php) at these files.
+//
+//   php dns_sync.php            # refresh zone files + nsd.conf
+//   ZR_NSD_BASE=/x php dns_sync.php
+// ============================================================
 
-define('NSD_ZONES_DIR', '/etc/nsd/zones');
-define('NSD_CONF', '/etc/nsd/nsd.conf');
-define('NSD_DB', '/var/lib/nsd/nsd.db');
+define('NO_SESSION', true);               // CLI: no web session needed
+require_once __DIR__ . '/config.php';
 
-function get_db() {
-    static $pdo = null;
-    if ($pdo === null) {
-        $dsn = 'mysql:host=' . MYSQL_HOST . ';port=' . MYSQL_PORT . ';dbname=' . MYSQL_DB . ';charset=utf8mb4';
-        $pdo = new PDO($dsn, MYSQL_USER, MYSQL_PASS, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        ]);
-    }
-    return $pdo;
+// --- Writable storage location (Termux-safe; /etc/nsd is read-only) ---
+
+$__nsd_base = getenv('ZR_NSD_BASE');
+if ($__nsd_base === false || $__nsd_base === '') {
+    $__nsd_base = (getenv('HOME') ?: '/data/data/com.termux/files/home') . '/.nsd';
 }
+define('NSD_BASE', rtrim($__nsd_base, '/'));
+define('NSD_ZONES_DIR', NSD_BASE . '/zones');
+define('NSD_CONF', NSD_BASE . '/nsd.conf');
+define('NSD_DB', NSD_BASE . '/nsd.db');
 
-function generate_serial() {
+function nsd_serial() {
     return date('Ymd') . '01';
 }
 
-function sync_dns() {
-    $db = get_db();
+// A target without a dot is relative to the zone; one with dots is
+// treated as an absolute name (trailing dot enforced).
+function zone_target(string $content): string {
+    $t = trim($content);
+    if ($t === '' || $t === '@') return '@';
+    if (strpos($t, '.') === false) return $t;
+    return substr($t, -1) === '.' ? $t : $t . '.';
+}
 
-    if (!is_dir(NSD_ZONES_DIR)) {
-        mkdir(NSD_ZONES_DIR, 0755, true);
+function sync_dns_to_zones() {
+    foreach ([NSD_ZONES_DIR, dirname(NSD_CONF), dirname(NSD_DB)] as $dir) {
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
     }
+
+    $db = db();
 
     $nameservers = $db->query("SELECT * FROM nameservers ORDER BY ns_domain, ns_name")->fetchAll(PDO::FETCH_ASSOC);
     $records = $db->query("SELECT * FROM dns_records WHERE status = 'active' ORDER BY domain, type, name")->fetchAll(PDO::FETCH_ASSOC);
-    $global_domain_row = $db->query("SELECT value FROM config WHERE key_name = 'global_domain'")->fetch();
-    $global_domain = $global_domain_row['value'] ?? 'dzhost.shop';
+
+    $row = $db->query("SELECT value FROM config WHERE key_name = 'global_domain'")->fetch();
+    $global_domain = $row['value'] ?? '';
+    if (SITE_DOMAIN !== '' && SITE_DOMAIN !== 'localhost') {
+        $global_domain = SITE_DOMAIN;
+    }
+    if ($global_domain === '') {
+        $global_domain = 'localhost';
+    }
 
     $zones = [];
     $ns_by_domain = [];
@@ -47,6 +71,7 @@ function sync_dns() {
         $zones[$r['domain']][] = $r;
     }
 
+    // Glue A records for every configured nameserver of its zone.
     foreach ($ns_by_domain as $domain => $ns_list) {
         if (!isset($zones[$domain])) {
             $zones[$domain] = [];
@@ -71,57 +96,67 @@ function sync_dns() {
         }
     }
 
+    // The global (site) zone must exist.
     if (empty($zones[$global_domain])) {
         $zones[$global_domain] = [];
     }
 
     $ns_for_global = $ns_by_domain[$global_domain] ?? [];
-    $has_soa_ns = false;
-    foreach ($zones[$global_domain] as $zr) {
-        if ($zr['type'] === 'NS') {
-            $has_soa_ns = true;
-            break;
-        }
-    }
-    if (!$has_soa_ns && !empty($ns_for_global)) {
-        foreach ($ns_for_global as $ns) {
-            array_unshift($zones[$global_domain], [
-                'name' => '@',
-                'type' => 'NS',
-                'content' => "{$ns['ns_name']}.{$global_domain}.",
-                'ttl' => 86400,
-                'priority' => 0,
-            ]);
-        }
-    }
 
-    if (!empty($ns_for_global)) {
-        $has_soa = false;
-        foreach ($zones[$global_domain] as $zr) {
-            if ($zr['type'] === 'SOA') {
-                $has_soa = true;
+    // No nameservers configured at all -> fall back to ns1.<domain> glue
+    // pointing at SERVER_IP so the zone stays self-delegatable.
+    foreach ($zones as $domain => &$recs) {
+        $has_ns = false;
+        foreach ($recs as $zr) {
+            if ($zr['type'] === 'NS') {
+                $has_ns = true;
                 break;
             }
         }
-        if (!$has_soa) {
-            $primary_ns = "{$ns_for_global[0]['ns_name']}.{$global_domain}.";
-            array_unshift($zones[$global_domain], [
-                'name' => '@',
-                'type' => 'SOA',
-                'content' => "{$primary_ns} admin.{$global_domain}. " . generate_serial() . " 3600 900 604800 86400",
-                'ttl' => 86400,
-                'priority' => 0,
-            ]);
+        $ns_list = $ns_by_domain[$domain] ?? [];
+        if (!$has_ns && empty($ns_list)) {
+            $ns1 = "ns1.{$domain}.";
+            $has_glue = false;
+            foreach ($recs as $zr) {
+                if ($zr['type'] === 'A' && ($zr['name'] === $domain . '.' || $zr['name'] === '@' && $domain === $global_domain)) {
+                    continue;
+                }
+                if ($zr['type'] === 'A' && rtrim($zr['name'], '.') === $domain) {
+                    $has_glue = true;
+                    break;
+                }
+            }
+            foreach ($recs as $zr) {
+                if ($zr['type'] === 'A' && ($zr['name'] === 'ns1' || $zr['name'] === 'ns1.' . $domain . '.')) {
+                    $has_glue = true;
+                    break;
+                }
+            }
+            if (!$has_glue && SERVER_IP !== '' && SERVER_IP !== '127.0.0.1') {
+                $recs[] = [
+                    'name' => 'ns1',
+                    'type' => 'A',
+                    'content' => SERVER_IP,
+                    'ttl' => 86400,
+                    'priority' => 0,
+                ];
+            }
         }
     }
+    unset($recs);
 
-    $serial = generate_serial();
+    if (empty($ns_by_domain[$global_domain])) {
+        $ns_by_domain[$global_domain] = [
+            ['ns_domain' => $global_domain, 'ns_name' => 'ns1', 'ip_address' => SERVER_IP],
+        ];
+    }
+
+    $serial = nsd_serial();
     $zone_files = [];
     $zone_domains = [];
 
     foreach ($zones as $domain => $recs) {
         $zone_file = NSD_ZONES_DIR . "/{$domain}.zone";
-        $zone_files[$domain] = $zone_file;
 
         $lines = [];
         $lines[] = "\$TTL 86400";
@@ -141,21 +176,14 @@ function sync_dns() {
                 break;
             }
         }
-        if (!$has_ns && !empty($ns_list)) {
-            foreach ($ns_list as $ns) {
-                $lines[] = "@ IN NS {$ns['ns_name']}.{$domain}.";
+        if (!$has_ns) {
+            if (!empty($ns_list)) {
+                foreach ($ns_list as $ns) {
+                    $lines[] = "@ IN NS {$ns['ns_name']}.{$domain}.";
+                }
+            } else {
+                $lines[] = "@ IN NS ns1.{$domain}.";
             }
-        }
-
-        $has_soa_ns = false;
-        foreach ($recs as $r) {
-            if ($r['type'] === 'SOA') {
-                $has_soa_ns = true;
-                break;
-            }
-        }
-        if (!$has_soa_ns && empty($ns_list)) {
-            $lines[] = "@ IN NS ns1.{$domain}.";
         }
 
         foreach ($recs as $r) {
@@ -174,31 +202,38 @@ function sync_dns() {
                     $lines[] = "{$name} IN AAAA {$r['content']}";
                     break;
                 case 'CNAME':
-                    $target = rtrim($r['content'], '.') . '.';
-                    $lines[] = "{$name} IN CNAME {$target}";
+                    $lines[] = "{$name} IN CNAME " . zone_target($r['content']);
                     break;
                 case 'MX':
-                    $lines[] = "{$name} IN MX {$r['priority']} {$r['content']}.";
+                    $lines[] = "{$name} IN MX {$r['priority']} " . zone_target($r['content']);
                     break;
                 case 'TXT':
-                    $lines[] = "{$name} IN TXT \"{$r['content']}\"";
+                    $lines[] = "{$name} IN TXT \"" . str_replace('"', '\"', $r['content']) . "\"";
                     break;
                 case 'NS':
-                    $lines[] = "{$name} IN NS {$r['content']}";
+                    $lines[] = "{$name} IN NS " . zone_target($r['content']);
                     break;
                 case 'SRV':
-                    $lines[] = "{$name} IN SRV {$r['priority']} {$r['content']}";
+                    $parts = preg_split('/\s+/', trim($r['content']), 3);
+                    if (count($parts) < 3) break;
+                    $lines[] = "{$name} IN SRV {$r['priority']} {$parts[0]} {$parts[1]} " . zone_target($parts[2]);
                     break;
                 case 'CAA':
                     $lines[] = "{$name} IN CAA {$r['content']}";
+                    break;
+                case 'PTR':
+                    $lines[] = "{$name} IN PTR " . zone_target($r['content']);
                     break;
             }
         }
 
         file_put_contents($zone_file, implode("\n", $lines) . "\n");
+        $zone_files[$domain] = $zone_file;
         $zone_domains[] = $domain;
     }
 
+    // On Android nothing may run on privileged port 53; NSD config still
+    // targets 53 by default and is overridden where it runs with root.
     $nsd_conf = "# ZRPanel Auto-generated NSD config\n";
     $nsd_conf .= "server:\n";
     $nsd_conf .= "    ip-address: 0.0.0.0\n";
@@ -215,12 +250,22 @@ function sync_dns() {
 
     file_put_contents(NSD_CONF, $nsd_conf);
 
-    exec('nsd-control reload 2>&1', $output, $ret);
-    if ($ret !== 0) {
-        exec('nsd-control restart 2>&1', $output, $ret);
+    // Reload a real NSD if one is present (external hosts only).
+    if (is_executable('/usr/bin/nsd-control') || is_executable('/usr/sbin/nsd-control')) {
+        exec('nsd-control reload 2>&1', $output, $ret);
+        if ($ret !== 0) {
+            exec('nsd-control restart 2>&1', $output, $ret);
+        }
     }
 
-    echo date('Y-m-d H:i:s') . " DNS sync complete: " . count($zone_domains) . " zones\n";
+    return $zone_domains;
 }
 
-sync_dns();
+try {
+    $done = sync_dns_to_zones();
+    echo date('Y-m-d H:i:s') . " DNS sync complete: " . count($done) . " zones -> " . NSD_ZONES_DIR . "\n";
+    echo "On-device authoritative DNS: \"php " . __DIR__ . "/scripts/dns_server.php\" (ZR_DNS_PORT, default 5390)\n";
+} catch (Throwable $e) {
+    fwrite(STDERR, "DNS sync failed: " . $e->getMessage() . "\n");
+    exit(1);
+}
