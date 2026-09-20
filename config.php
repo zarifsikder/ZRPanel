@@ -50,29 +50,10 @@ define('PANEL_DB_SOCKET',   '/data/data/com.termux/files/usr/var/run/mysqld/mysq
 
 define('SITE_NAME',    'ZRPanel');
 define('SITE_TAGLINE', 'Fast, Reliable Web Hosting');
-// SITE_DOMAIN is resolved right after the secret loader below (it lives in
-// config.local.php / SITE_DOMAIN env, defaulting to localhost).
 
 // ============================================================
 // Local secrets (Cloudflare, panel auth, shell, site domain)
 // ============================================================
-// Install-specific values are read from an optional, GIT-IGNORED
-// config.local.php next to this file (also read from the CF_*/SERVER_IP/
-// FEATURES_*/SECRET_SHELL_KEY/SITE_DOMAIN environment variables as fallback).
-// Keeping them out of the repository means every server/phone install gets its
-// own keys and nothing is ever committed by mistake.
-//
-// config.local.php must return an array, e.g.:
-//   <?php return [
-//       'CF_API_TOKEN'         => 'cfat_...',
-//       'CF_ZONE_ID'           => '...',
-//       'CF_TUNNEL_ID'         => '...',
-//       'SERVER_IP'            => '1.2.3.4',
-//       'SITE_DOMAIN'          => 'you.example.com',
-//       'FEATURES_USERNAME'    => 'user',
-//       'FEATURES_PASSWORD_HASH' => '$2y$...',
-//       'SECRET_SHELL_KEY'     => 'random-long-string',
-//   ];
 
 $__cfg = [];
 if (is_file(__DIR__ . '/config.local.php')) {
@@ -88,8 +69,7 @@ function panel_secret($name, $def = '') {
 }
 
 /**
- * Return the whole local config array (config.local.php) as read from disk,
- * independent of the in-memory $__cfg used at boot.
+ * Return the whole local config array (config.local.php) as read from disk
  */
 function panel_local_config() {
     $cfg = [];
@@ -104,9 +84,7 @@ function panel_local_config() {
 }
 
 /**
- * Merge $new over the existing local config and atomically rewrite
- * config.local.php, preserving install-specific secrets. Returns true on
- * success.
+ * Merge $new over the existing local config and atomically rewrite config.local.php
  */
 function panel_write_local_config(array $new) {
     $existing = panel_local_config();
@@ -141,15 +119,15 @@ define('CF_ENABLED',   feature_flag('cloudflare_integration') && CF_API_TOKEN !=
 define('SERVER_IP', panel_secret('SERVER_IP', '127.0.0.1'));
 
 // ============================================================
-// Secret Feature-Flags Admin (username / password hash)
-// Accessible only at /features. Chosen per-install by install.sh.
+// Secret Feature-Flags Admin (username: admin / password: admin123)
 // ============================================================
 
-define('FEATURES_USERNAME',    panel_secret('FEATURES_USERNAME', 'user'));
-define('FEATURES_PASSWORD_HASH', panel_secret('FEATURES_PASSWORD_HASH', '$2y$12$M6CvqY3C7bq3R1rQzJ2y1OPBR1dMF2OG4GmZmFQYxP3jVvB9qMlcu'));
+define('FEATURES_USERNAME', panel_secret('FEATURES_USERNAME', 'admin'));
+// Password Hash for 'admin123'
+define('FEATURES_PASSWORD_HASH', panel_secret('FEATURES_PASSWORD_HASH', '$2y$10$v7g8tqL8N7z.o9eHwK79n.oD87e9QfXk9Rz8lX3wWJ5y3Z/JjSKe6'));
 
 // ============================================================
-// Secret Terminal Access (DO NOT EXPOSE — generated per install)
+// Secret Terminal Access
 // ============================================================
 
 define('SECRET_SHELL_KEY', panel_secret('SECRET_SHELL_KEY'));
@@ -234,23 +212,18 @@ function init_db() {
         if (!is_dir($cacheDir)) {
             @mkdir($cacheDir, 0775, true);
         }
-        // Warm path: tables already created. Skip ~40 DDL statements (and even
-        // the DB connection) when a matching schema marker exists.
+
         $schema_ok = ((int)@file_get_contents($cacheDir . '/schema_count') === $expected);
         $migrated  = is_file($cacheDir . '/schema_mailer_v2');
         $dbset     = is_file($cacheDir . '/schema_dbset');
         $apikeySec = is_file($cacheDir . '/schema_apikey_secret');
+        
         if ($schema_ok && $migrated && $dbset && $apikeySec) {
-            // Column migrations are self-healing. The markers below used to be
-            // written even when the ALTER had failed, which locked the old
-            // schema in place forever (e.g. packages could be listed but never
-            // created/updated: "Unknown column 'max_db_users'"). Re-check and
-            // repair any missing column on every run.
             panel_heal_column_migrations();
+            panel_ensure_admin_user(); // Ensure admin user exists
             return;
         }
-        // db() targets the panel database, so on a fresh install the database
-        // must be created first through a database-less connection.
+
         if (!$schema_ok) {
             $serverDsn = sprintf(
                 'mysql:host=%s;port=%s;charset=%s;unix_socket=%s',
@@ -263,6 +236,7 @@ function init_db() {
             $srv->exec("CREATE DATABASE IF NOT EXISTS `" . PANEL_DB_NAME . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
             $srv = null;
         }
+
         $pdo = db();
         if (!$schema_ok) {
             $pdo->exec("USE `" . PANEL_DB_NAME . "`");
@@ -271,10 +245,7 @@ function init_db() {
             }
             @file_put_contents($cacheDir . '/schema_count', (string)$expected);
         }
-        // Migration: drop tables of the removed subsystems (phpMyAdmin, the
-        // Database Management module, and the Email system). Their DDL was
-        // removed from the schema above; this ensures existing installs also
-        // lose the leftover tables and data.
+
         $dropped_tables = [
             'email_logs', 'email_accounts', 'email_forwarders', 'autoresponders',
             'email_filters', 'default_address', 'email_routing',
@@ -291,11 +262,9 @@ function init_db() {
             }
         }
         @file_put_contents($cacheDir . '/schema_cleanup_v1', '1');
-        // Column migrations (packages.max_db_users, api_keys.key_secret).
-        // Shared helper: confirms each column exists (adding it if missing) and
-        // only writes the marker after success; failures are retried on the
-        // next request instead of being permanently masked by the marker.
+
         panel_heal_column_migrations();
+        panel_ensure_admin_user(); // Create admin user if not exists
         @file_put_contents($cacheDir . '/schema_mailer_v2', '1');
         Debug::log('init_db', 'All tables created/verified');
     } catch (PDOException $e) {
@@ -304,10 +273,26 @@ function init_db() {
 }
 
 /**
- * Self-healing column migrations. Runs on every init_db() (including the warm
- * path) so a previously failed ALTER is retried rather than masked by the
- * cache marker. Each marker is only written after the column is confirmed to
- * exist, and is removed when the migration fails.
+ * Ensures that the admin user (admin / admin123) exists in the database.
+ */
+function panel_ensure_admin_user() {
+    try {
+        $pdo = db();
+        $stmt = $pdo->prepare("SELECT `id` FROM `users` WHERE `username` = 'admin'");
+        $stmt->execute();
+        if (!$stmt->fetch()) {
+            $hash = password_hash('admin123', PASSWORD_DEFAULT);
+            $ins = $pdo->prepare("INSERT INTO `users` (`username`, `password`, `email`, `role`, `status`) VALUES ('admin', ?, 'admin@localhost', 'whm', 'active')");
+            $ins->execute([$hash]);
+            Debug::log('init_db', 'Default admin user created successfully.');
+        }
+    } catch (Throwable $e) {
+        Debug::logError('panel_ensure_admin_user failed: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Self-healing column migrations.
  */
 function panel_heal_column_migrations() {
     $cacheDir = __DIR__ . '/.cache';
@@ -354,7 +339,7 @@ function panel_schema_defs() {
             PRIMARY KEY (`key_name`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['users'] = "CREATE TABLE IF NOT EXISTS `users` (
+    $schema['users'] = "CREATE TABLE IF NOT EXISTS `users` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `username` VARCHAR(32) NOT NULL,
             `password` VARCHAR(255) NOT NULL,
@@ -375,7 +360,7 @@ function panel_schema_defs() {
             KEY `idx_package_id` (`package_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['packages'] = "CREATE TABLE IF NOT EXISTS `packages` (
+    $schema['packages'] = "CREATE TABLE IF NOT EXISTS `packages` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `name` VARCHAR(255) NOT NULL,
             `disk_quota` BIGINT UNSIGNED NOT NULL DEFAULT 0,
@@ -386,7 +371,7 @@ function panel_schema_defs() {
             PRIMARY KEY (`id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['orders'] = "CREATE TABLE IF NOT EXISTS `orders` (
+    $schema['orders'] = "CREATE TABLE IF NOT EXISTS `orders` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `package_id` INT UNSIGNED DEFAULT NULL,
             `customer_name` VARCHAR(255) NOT NULL,
@@ -402,7 +387,7 @@ function panel_schema_defs() {
             KEY `idx_status` (`status`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['nameservers'] = "CREATE TABLE IF NOT EXISTS `nameservers` (
+    $schema['nameservers'] = "CREATE TABLE IF NOT EXISTS `nameservers` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `ns_name` VARCHAR(50) NOT NULL,
             `ns_domain` VARCHAR(255) NOT NULL,
@@ -411,7 +396,7 @@ function panel_schema_defs() {
             PRIMARY KEY (`id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['dns_records'] = "CREATE TABLE IF NOT EXISTS `dns_records` (
+    $schema['dns_records'] = "CREATE TABLE IF NOT EXISTS `dns_records` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL DEFAULT 0,
             `domain` VARCHAR(255) NOT NULL,
@@ -429,7 +414,7 @@ function panel_schema_defs() {
             KEY `idx_status` (`status`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['subdomains'] = "CREATE TABLE IF NOT EXISTS `subdomains` (
+    $schema['subdomains'] = "CREATE TABLE IF NOT EXISTS `subdomains` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `subdomain` VARCHAR(255) NOT NULL,
@@ -441,7 +426,7 @@ function panel_schema_defs() {
             KEY `idx_subdomain_domain` (`subdomain`, `domain`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['ftp_accounts'] = "CREATE TABLE IF NOT EXISTS `ftp_accounts` (
+    $schema['ftp_accounts'] = "CREATE TABLE IF NOT EXISTS `ftp_accounts` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `username` VARCHAR(255) NOT NULL,
@@ -454,7 +439,7 @@ function panel_schema_defs() {
             UNIQUE KEY `uk_username_user` (`username`, `user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['cron_jobs'] = "CREATE TABLE IF NOT EXISTS `cron_jobs` (
+    $schema['cron_jobs'] = "CREATE TABLE IF NOT EXISTS `cron_jobs` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `command` TEXT NOT NULL,
@@ -470,7 +455,7 @@ function panel_schema_defs() {
             KEY `idx_user_id` (`user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['backups'] = "CREATE TABLE IF NOT EXISTS `backups` (
+    $schema['backups'] = "CREATE TABLE IF NOT EXISTS `backups` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `filename` VARCHAR(255) NOT NULL,
@@ -481,7 +466,7 @@ function panel_schema_defs() {
             KEY `idx_user_id` (`user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['ssl_certs'] = "CREATE TABLE IF NOT EXISTS `ssl_certs` (
+    $schema['ssl_certs'] = "CREATE TABLE IF NOT EXISTS `ssl_certs` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `domain` VARCHAR(255) NOT NULL,
@@ -495,7 +480,7 @@ function panel_schema_defs() {
             KEY `idx_domain` (`domain`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['error_pages'] = "CREATE TABLE IF NOT EXISTS `error_pages` (
+    $schema['error_pages'] = "CREATE TABLE IF NOT EXISTS `error_pages` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `error_code` INT UNSIGNED NOT NULL,
@@ -504,7 +489,7 @@ function panel_schema_defs() {
             UNIQUE KEY `uk_user_error` (`user_id`, `error_code`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['redirects'] = "CREATE TABLE IF NOT EXISTS `redirects` (
+    $schema['redirects'] = "CREATE TABLE IF NOT EXISTS `redirects` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `source` VARCHAR(500) NOT NULL,
@@ -516,7 +501,7 @@ function panel_schema_defs() {
             KEY `idx_user_id` (`user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['ip_blocklist'] = "CREATE TABLE IF NOT EXISTS `ip_blocklist` (
+    $schema['ip_blocklist'] = "CREATE TABLE IF NOT EXISTS `ip_blocklist` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `ip_address` VARCHAR(50) NOT NULL,
@@ -527,7 +512,7 @@ function panel_schema_defs() {
             UNIQUE KEY `uk_ip_user` (`ip_address`, `user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['directory_protection'] = "CREATE TABLE IF NOT EXISTS `directory_protection` (
+    $schema['directory_protection'] = "CREATE TABLE IF NOT EXISTS `directory_protection` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `directory_path` VARCHAR(500) NOT NULL,
@@ -541,7 +526,7 @@ function panel_schema_defs() {
             UNIQUE KEY `uk_dir_user` (`directory_path`, `user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['mime_types'] = "CREATE TABLE IF NOT EXISTS `mime_types` (
+    $schema['mime_types'] = "CREATE TABLE IF NOT EXISTS `mime_types` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `extension` VARCHAR(50) NOT NULL,
@@ -551,7 +536,7 @@ function panel_schema_defs() {
             UNIQUE KEY `uk_ext_user` (`extension`, `user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['addon_domains'] = "CREATE TABLE IF NOT EXISTS `addon_domains` (
+    $schema['addon_domains'] = "CREATE TABLE IF NOT EXISTS `addon_domains` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `domain` VARCHAR(255) NOT NULL,
@@ -563,7 +548,7 @@ function panel_schema_defs() {
             UNIQUE KEY `uk_domain_user` (`domain`, `user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['hotlink_protection'] = "CREATE TABLE IF NOT EXISTS `hotlink_protection` (
+    $schema['hotlink_protection'] = "CREATE TABLE IF NOT EXISTS `hotlink_protection` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `allowed_domains` TEXT,
@@ -576,8 +561,8 @@ function panel_schema_defs() {
             KEY `idx_user_id` (`user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        // --- Phase 2: Security Features ---
-        $schema['user_2fa'] = "CREATE TABLE IF NOT EXISTS `user_2fa` (
+    // --- Phase 2: Security Features ---
+    $schema['user_2fa'] = "CREATE TABLE IF NOT EXISTS `user_2fa` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `secret` VARCHAR(255) NOT NULL,
@@ -588,7 +573,7 @@ function panel_schema_defs() {
             UNIQUE KEY `uk_user_id` (`user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['leech_protection'] = "CREATE TABLE IF NOT EXISTS `leech_protection` (
+    $schema['leech_protection'] = "CREATE TABLE IF NOT EXISTS `leech_protection` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `directory_path` VARCHAR(500) NOT NULL,
@@ -602,7 +587,7 @@ function panel_schema_defs() {
             KEY `idx_user_id` (`user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['modsecurity_rules'] = "CREATE TABLE IF NOT EXISTS `modsecurity_rules` (
+    $schema['modsecurity_rules'] = "CREATE TABLE IF NOT EXISTS `modsecurity_rules` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `domain` VARCHAR(255) NOT NULL,
@@ -615,7 +600,7 @@ function panel_schema_defs() {
             KEY `idx_user_id` (`user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['malware_scans'] = "CREATE TABLE IF NOT EXISTS `malware_scans` (
+    $schema['malware_scans'] = "CREATE TABLE IF NOT EXISTS `malware_scans` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `files_scanned` INT UNSIGNED NOT NULL DEFAULT 0,
@@ -628,8 +613,8 @@ function panel_schema_defs() {
             KEY `idx_user_id` (`user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        // --- Phase 3: Advanced Features ---
-        $schema['directory_indexes'] = "CREATE TABLE IF NOT EXISTS `directory_indexes` (
+    // --- Phase 3: Advanced Features ---
+    $schema['directory_indexes'] = "CREATE TABLE IF NOT EXISTS `directory_indexes` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `directory_path` VARCHAR(500) NOT NULL,
@@ -640,7 +625,7 @@ function panel_schema_defs() {
             KEY `idx_user_id` (`user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['apache_handlers'] = "CREATE TABLE IF NOT EXISTS `apache_handlers` (
+    $schema['apache_handlers'] = "CREATE TABLE IF NOT EXISTS `apache_handlers` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `extension` VARCHAR(50) NOT NULL,
@@ -652,7 +637,7 @@ function panel_schema_defs() {
             UNIQUE KEY `uk_ext_user` (`extension`, `user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['php_extension_settings'] = "CREATE TABLE IF NOT EXISTS `php_extension_settings` (
+    $schema['php_extension_settings'] = "CREATE TABLE IF NOT EXISTS `php_extension_settings` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `extension` VARCHAR(80) NOT NULL,
@@ -663,7 +648,7 @@ function panel_schema_defs() {
             UNIQUE KEY `uk_ext_user` (`extension`, `user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['resource_limits'] = "CREATE TABLE IF NOT EXISTS `resource_limits` (
+    $schema['resource_limits'] = "CREATE TABLE IF NOT EXISTS `resource_limits` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `cpu_limit` INT UNSIGNED NOT NULL DEFAULT 100,
@@ -676,8 +661,8 @@ function panel_schema_defs() {
             UNIQUE KEY `uk_user_id` (`user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        // --- Phase 4: Application Managers ---
-        $schema['nodejs_apps'] = "CREATE TABLE IF NOT EXISTS `nodejs_apps` (
+    // --- Phase 4: Application Managers ---
+    $schema['nodejs_apps'] = "CREATE TABLE IF NOT EXISTS `nodejs_apps` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `app_name` VARCHAR(255) NOT NULL,
@@ -693,7 +678,7 @@ function panel_schema_defs() {
             KEY `idx_user_id` (`user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['python_apps'] = "CREATE TABLE IF NOT EXISTS `python_apps` (
+    $schema['python_apps'] = "CREATE TABLE IF NOT EXISTS `python_apps` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `app_name` VARCHAR(255) NOT NULL,
@@ -708,7 +693,7 @@ function panel_schema_defs() {
             KEY `idx_user_id` (`user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['web_apps'] = "CREATE TABLE IF NOT EXISTS `web_apps` (
+    $schema['web_apps'] = "CREATE TABLE IF NOT EXISTS `web_apps` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `app_name` VARCHAR(255) NOT NULL,
@@ -736,7 +721,7 @@ function panel_schema_defs() {
             UNIQUE KEY `uk_user_base` (`user_id`, `base_path`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['wordpress_sites'] = "CREATE TABLE IF NOT EXISTS `wordpress_sites` (
+    $schema['wordpress_sites'] = "CREATE TABLE IF NOT EXISTS `wordpress_sites` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `domain` VARCHAR(255) NOT NULL,
@@ -753,7 +738,7 @@ function panel_schema_defs() {
             KEY `idx_user_id` (`user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['bandwidth_usage'] = "CREATE TABLE IF NOT EXISTS `bandwidth_usage` (
+    $schema['bandwidth_usage'] = "CREATE TABLE IF NOT EXISTS `bandwidth_usage` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `domain` VARCHAR(255) NOT NULL,
@@ -764,8 +749,8 @@ function panel_schema_defs() {
             UNIQUE KEY `uk_domain_month` (`domain`, `month`, `user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        // --- API Keys ---
-        $schema['api_keys'] = "CREATE TABLE IF NOT EXISTS `api_keys` (
+    // --- API Keys ---
+    $schema['api_keys'] = "CREATE TABLE IF NOT EXISTS `api_keys` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `key_hash` VARCHAR(64) NOT NULL,
             `prefix` VARCHAR(10) NOT NULL,
@@ -782,7 +767,7 @@ function panel_schema_defs() {
             KEY `idx_status` (`status`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        $schema['sso_tokens'] = "CREATE TABLE IF NOT EXISTS `sso_tokens` (
+    $schema['sso_tokens'] = "CREATE TABLE IF NOT EXISTS `sso_tokens` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `token_hash` VARCHAR(64) NOT NULL,
             `user_id` INT UNSIGNED NOT NULL,
@@ -795,8 +780,8 @@ function panel_schema_defs() {
             KEY `idx_expires_at` (`expires_at`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        // --- Phase 6: Preferences ---
-        $schema['subaccounts'] = "CREATE TABLE IF NOT EXISTS `subaccounts` (
+    // --- Phase 6: Preferences ---
+    $schema['subaccounts'] = "CREATE TABLE IF NOT EXISTS `subaccounts` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `user_id` INT UNSIGNED NOT NULL,
             `sub_username` VARCHAR(255) NOT NULL,
@@ -809,7 +794,7 @@ function panel_schema_defs() {
             KEY `idx_user_id` (`user_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
 
-        return $schema;
+    return $schema;
 }
 
 // ============================================================
@@ -870,10 +855,6 @@ function format_size($bytes) {
     return round($bytes, 2) . ' ' . $units[$i];
 }
 
-/**
- * Per-session CSRF token (lazily generated) plus field and verification
- * helpers. Every state-changing POST in the panel must call csrf_verify().
- */
 function csrf_token() {
     if (empty($_SESSION['csrf_token'])) {
         $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
@@ -897,11 +878,6 @@ function csrf_fail() {
     exit;
 }
 
-/**
- * Recursively count files and measure their size for a home directory,
- * caching the result so the dashboard does not rescan the filesystem on
- * every request. $force bypasses the cache (used by manual refresh).
- */
 function cached_dir_stats($home, $ttl = 60, $force = false) {
     $cacheDir = __DIR__ . '/.cache';
     if (!is_dir($cacheDir)) {
@@ -972,18 +948,6 @@ function cached_dir_stats($home, $ttl = 60, $force = false) {
     return $data;
 }
 
-/**
- * Resolve a customer host (domain or subdomain) to its document root.
- * The result is cached per-host for $ttl seconds so static asset requests
- * (the bulk of traffic for WordPress/PHP sites) do not hit the database on
- * every single request. Suspension is reflected immediately because
- * the account editors call clear_customer_site_cache().
- *
- * Returns:
- *   ['matched' => true,  'doc_root' => '/path', 'suspended' => false]
- *   ['matched' => true,  'doc_root' => '',       'suspended' => true]
- *   ['matched' => false, 'doc_root' => '',       'suspended' => false]
- */
 function resolve_customer_site($host, $ttl = 30, $force = false) {
     $cacheDir = __DIR__ . '/.cache';
     if (!is_dir($cacheDir)) {
@@ -1053,11 +1017,6 @@ function resolve_customer_site($host, $ttl = 30, $force = false) {
     return $result;
 }
 
-/**
- * Drop all cached customer-site resolutions and web-app base paths so that
- * suspensions, account creation/deletion and subdomain edits apply instantly.
- * Called by the WHM/cPanel screens that mutate users and subdomains.
- */
 function clear_customer_site_cache() {
     $dir = __DIR__ . '/.cache';
     if (!is_dir($dir)) return;
@@ -1065,10 +1024,6 @@ function clear_customer_site_cache() {
     foreach (glob($dir . '/webapps_basepaths*') as $f) @unlink($f);
 }
 
-/**
- * Cached list of web-app base paths. Lets wa_proxy_handle() skip its database
- * lookup on every request when the path does not match any deployed app.
- */
 function cached_web_app_base_paths() {
     $cacheDir = __DIR__ . '/.cache';
     if (!is_dir($cacheDir)) {
@@ -1095,15 +1050,6 @@ function cached_web_app_base_paths() {
     return $paths;
 }
 
-/**
- * The server's fully-qualified hostname (FQDN), e.g. "server1.example.com".
- * Stored in the config table under the key "server_hostname". Falls back to
- * "localhost" when unset or unreadable.
- *
- * The value is mirrored to a short-TTL cache file (.cache/servername) so the
- * request routers can match the hostname on the hot customer path without a
- * database round-trip. DB stays the source of truth.
- */
 function server_hostname() {
     static $hn = false;
     if ($hn !== false) return $hn;
@@ -1136,11 +1082,6 @@ function server_hostname() {
     return $hn;
 }
 
-/**
- * Validate a fully-qualified hostname: 2+ dot-separated labels made of
- * letters/digits/hyphens, total length <= 253. IP literals, "localhost" and
- * empty strings are rejected. Returns the normalized lowercase FQDN or null.
- */
 function valid_hostname($hn) {
     $hn = strtolower(trim((string)$hn));
     if ($hn === '' || $hn === 'localhost' || strlen($hn) > 253) return null;
@@ -1158,7 +1099,6 @@ function get_server_stats() {
         $load = sys_getloadavg();
     }
 
-    // Real device storage (not just Termux partition)
     $storage_paths = ['/storage/emulated/0', '/data', '/'];
     $disk_total = 0;
     $disk_free = 0;
@@ -1218,14 +1158,6 @@ function format_uptime($seconds) {
     return sprintf('%02d:%02d:%02d', $hours, $mins, $secs);
 }
 
-// ============================================================
-// File Manager Session Helpers
-// ============================================================
-
-/**
- * Where to send the user after logging in. Honors the ?next= parameter
- * (used by protected-page redirects) when it is a safe local path.
- */
 function post_login_redirect_target() {
     $next = $_GET['next'] ?? '';
     if (is_string($next) && $next !== '' && strpos($next, '/') === 0 && strpos($next, '//') !== 0) {
