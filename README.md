@@ -36,7 +36,7 @@ Requires: Android 8+ · Free · No cloud server · No monthly fees
 Open **Termux** and paste:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zarifsikder/zenpanel/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/zarifsikder/zrpanel/main/install.sh | bash
 ```
 
 > **It installs the runtimes, clones the panel, creates the `panel` database with
