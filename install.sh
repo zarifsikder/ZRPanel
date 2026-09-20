@@ -23,7 +23,7 @@ DBNAME="panel"
 LOG_DIR="$PREFIX/var/panel"
 PORT="${ZENPANEL_PORT:-8080}"
 
-GIT_URL="${ZENPANEL_REPO_URL:-https://github.com/zarifsikder/zenpanel.git}"
+GIT_URL="${ZENPANEL_REPO_URL:-https://github.com/zarifsikder/zrpanel.git}"
 FEATURES_USER="${ZENPANEL_FEATURES_USER:-user}"
 
 c_green=$'\033[32m'; c_yellow=$'\033[33m'; c_red=$'\033[31m'; c_cyan=$'\033[36m'
